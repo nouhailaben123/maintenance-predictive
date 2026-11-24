@@ -1,0 +1,123 @@
+{
+    "vhosts": [
+        {
+            "name": "/"
+        }
+    ],
+    "exchanges": [
+        {
+            "name": "measures.fanout",
+            "vhost": "/",
+            "type": "fanout",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "health.fanout",
+            "vhost": "/",
+            "type": "fanout",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        },
+        {
+            "name": "dead.exchange",
+            "vhost": "/",
+            "type": "fanout",
+            "durable": true,
+            "auto_delete": false,
+            "internal": false,
+            "arguments": {}
+        }
+    ],
+    "queues": [
+        {
+            "name": "q.storage",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-dead-letter-exchange": "dead.exchange"
+            }
+        },
+        {
+            "name": "q.monitoring",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-dead-letter-exchange": "dead.exchange"
+            }
+        },
+        {
+            "name": "q.alerts",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-dead-letter-exchange": "dead.exchange"
+            }
+        },
+        {
+            "name": "q.health.store",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {
+                "x-dead-letter-exchange": "dead.exchange"
+            }
+        },
+        {
+            "name": "q.dead",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        }
+    ],
+    "bindings": [
+        {
+            "source": "measures.fanout",
+            "vhost": "/",
+            "destination": "q.storage",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        },
+        {
+            "source": "measures.fanout",
+            "vhost": "/",
+            "destination": "q.monitoring",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        },
+        {
+            "source": "health.fanout",
+            "vhost": "/",
+            "destination": "q.alerts",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        },
+        {
+            "source": "health.fanout",
+            "vhost": "/",
+            "destination": "q.health.store",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        },
+        {
+            "source": "dead.exchange",
+            "vhost": "/",
+            "destination": "q.dead",
+            "destination_type": "queue",
+            "routing_key": "",
+            "arguments": {}
+        }
+    ]
+}
