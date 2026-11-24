@@ -10,7 +10,25 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
-      
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s  
+  rabbitmq-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./infra/rabbitmq/definitions.json:/definitions.json:ro
+    entrypoint: ["curl", "-sf", "--retry", "10", "--retry-delay", "3", "--retry-connrefused",
+                 "-u", "${RABBITMQ_USER}:${RABBITMQ_PASSWORD}",
+                 "-H", "content-type: application/json",
+                 "-X", "POST", "http://rabbitmq:15672/api/definitions",
+                 "--data-binary", "@/definitions.json"]
+    restart: "no"  
   postgres:
     image: postgres:16
     ports:
