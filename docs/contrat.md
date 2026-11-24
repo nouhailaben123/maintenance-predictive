@@ -1,6 +1,6 @@
 # Contrat de messages : Maintenance prédictive
 
-Version 1.0. Ce document fixe les formats et les noms utilisés par tous les services.
+Version 1.1. Ce document fixe les formats et les noms utilisés par tous les services.
 Toute modification doit être validée par les 4 membres de l'équipe.
 
 ## 1. Vue d'ensemble
@@ -87,3 +87,41 @@ Les consommateurs utilisent l'**ack manuel**, seulement après traitement réuss
 | POST | `/measures/batch` | Envoyer plusieurs mesures | mêmes codes |
 
 Authentification : en-tête `X-API-Key`.
+
+## 8. Précisions sur les événements de santé (v1.1, proposées par BEN DRIOUICHE Maryam)
+
+### 8.1 Moment de publication
+Le monitoring publie un événement dans `health.fanout` :
+- à chaque **changement d'état** ;
+- puis **un battement toutes les 5 s** par machine (`HEARTBEAT_SEC`), même sans changement.
+Il ne publie pas un événement par mesure (pour limiter la charge).
+
+### 8.2 Champs
+- `window_end` : timestamp de la dernière mesure de la fenêtre ; pour `SILENT`, heure de détection (UTC).
+- `health_score` : entier de 0 à 100. `OK` ≥ 70, `WARN` ≤ 69, `CRIT` ≤ 39, `SILENT` = 0.
+  L'état est décidé par les règles (limites, z-score), pas par le score seul.
+- `samples` : nombre de mesures dans la fenêtre (60 au maximum).
+- `reasons` : liste, valeurs possibles :
+  `temperature_warn`, `temperature_crit`, `vibration_warn`, `vibration_crit`, `power_warn`, `power_crit`,
+  `rpm_warn`, `rpm_crit`, `temperature_zscore>3`, `vibration_zscore>3`, `power_zscore>3`, `rpm_zscore>3`,
+  `no_data>15s`, `declared_idle`, `declared_stopped`.
+
+### 8.3 Machine à l'arrêt
+Une mesure avec `status = idle` ou `stopped` ne déclenche **aucune alerte** (état `OK`, raison `declared_*`).
+Une machine qui **n'envoie plus rien** passe en `SILENT` après 15 s (`SILENT_TIMEOUT_SEC`).
+Le simulateur reproduit l'« arrêt de machine » en **cessant d'émettre**.
+
+### 8.4 Base de données
+- `measurements` : `message_id` (UNIQUE), `machine_id`, `seq`, `timestamp`, `status`, `temperature_c`,
+  `vibration_mms`, `power_kw`, `rpm` ; index `(machine_id, timestamp)`.
+- `machines` : `machine_id`, `type`.
+- `thresholds` : `machine_type`, `metric`, `warn_min`, `warn_max`, `crit_min`, `crit_max` ;
+  inclut un type `default`.
+- Rôle SQL en lecture seule `monitoring_ro` sur `measurements`, `machines`, `thresholds`.
+
+### 8.5 Divers
+- L'ingestion publie avec `routing_key = machine_id` (sans effet sur un fanout ; prépare le partitionnement).
+- Le monitoring expose `/metrics` sur le port 9102.
+- Erreur **définitive** (message illisible, champ manquant) : `nack` sans remise en file → `q.dead`.
+  Erreur **transitoire** (broker ou base indisponible) : pas d'ack, le message est redélivré.
+- Type d'alerte : déduit par l'alert-service du préfixe de `reasons[0]`.
