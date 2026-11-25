@@ -19,7 +19,7 @@ def _connect():
             return pika.BlockingConnection(pika.ConnectionParameters(
                 host=cfg.RABBITMQ_HOST, port=cfg.RABBITMQ_PORT, heartbeat=30,
                 credentials=pika.PlainCredentials(cfg.RABBITMQ_USER, cfg.RABBITMQ_PASSWORD)))
-        except AMQPError as exc:
+        except (AMQPError, OSError) as exc:    # OSError : nom d'hôte introuvable (DNS), connexion refusée...
             log.warning("RabbitMQ indisponible (%s), nouvel essai dans %ss", exc, delay)
             time.sleep(delay)
             delay = min(delay * 2, 30)           # backoff exponentiel plafonné
@@ -83,6 +83,6 @@ def run(engine: Engine):
                 if now - last_refresh >= cfg.THRESHOLD_REFRESH_SEC:
                     refresh_reference(engine)
                     last_refresh = now
-        except AMQPError as exc:                        # ERREUR TRANSITOIRE : broker coupé
+        except (AMQPError, OSError) as exc:             # ERREUR TRANSITOIRE : broker coupé, réseau
             log.warning("Connexion RabbitMQ perdue (%s) : reconnexion", exc)
             time.sleep(2)
