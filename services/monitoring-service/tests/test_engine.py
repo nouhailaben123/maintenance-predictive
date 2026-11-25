@@ -45,3 +45,13 @@ def test_declared_stopped_is_not_an_alert():
     e = new_engine()
     e.process(mk(1, temp=0, status="stopped"), now=0)
     assert e.machines["M-01"].stable == "OK"
+    
+def test_published_score_matches_state_bands():
+    """Contrat v1.1 : OK >= 70, WARN <= 69, CRIT <= 39, SILENT = 0."""
+    e = new_engine()
+    e.process(mk(1), now=0)
+    m = e.machines["M-01"]
+    for state, raw, lo, hi in [("OK", 40, 70, 100), ("WARN", 88, 0, 69),
+                               ("CRIT", 88, 0, 39), ("SILENT", 50, 0, 0)]:
+        m.stable, m.score = state, raw
+        assert lo <= e._score_for_state(m) <= hi
