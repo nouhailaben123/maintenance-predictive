@@ -1,6 +1,6 @@
 # Contrat de messages : Maintenance prédictive
 
-Version 1.1. Ce document fixe les formats et les noms utilisés par tous les services.
+Version 1.2. Ce document fixe les formats et les noms utilisés par tous les services.
 Toute modification doit être validée par les 4 membres de l'équipe.
 
 ## 1. Vue d'ensemble
@@ -125,3 +125,51 @@ Le simulateur reproduit l'« arrêt de machine » en **cessant d'émettre**.
 - Erreur **définitive** (message illisible, champ manquant) : `nack` sans remise en file → `q.dead`.
   Erreur **transitoire** (broker ou base indisponible) : pas d'ack, le message est redélivré.
 - Type d'alerte : déduit par l'alert-service du préfixe de `reasons[0]`.
+
+## 9. Comportement du monitoring (implémenté, v1.2) (proposées par BEN DRIOUICHE Maryam)
+
+### 9.1 Ce que les autres services doivent savoir
+- Le monitoring publie un événement par machine **toutes les 5 s** (battement) et à chaque changement d'état.
+  Un même état est donc **répété** (OK, OK, OK… ou SILENT, SILENT…).
+  - **alert-service** : ne crée une alerte qu'au **changement d'état** (ignorer les répétitions), la résout au retour
+    à `OK`, et reste idempotent sur `event_id`.
+  - **storage-service** (`q.health.store`) : insère avec `ON CONFLICT (event_id) DO NOTHING` ;
+    prévoir environ 12 lignes par minute et par machine.
+- Le score publié est toujours dans la bande de l'état : `OK` ≥ 70, `WARN` ≤ 69, `CRIT` ≤ 39, `SILENT` = 0.
+- Le monitoring dédoublonne les mesures par `message_id`, les trie par `timestamp` et compte les trous de `seq`.
+- `seq` : strictement croissant par machine, **sans retour en arrière** même après un redémarrage du simulateur.
+  Un renvoi après erreur réutilise le même `message_id` et le même `seq`.
+- `timestamp` : toujours avec fuseau (UTC, suffixe `Z`). L'ingestion rejette (422) une date sans fuseau.
+- Une machine absente de la table `machines` utilise les seuils du type `default`.
+
+### 9.2 Erreurs et file `q.dead`
+- Tout consommateur (monitoring, storage) envoie un message **illisible ou invalide** dans `q.dead`
+  (`nack`, sans remise en file). Un message invalide publié sur `measures.fanout` produit donc **une copie par file**.
+- Erreur transitoire (base ou broker indisponible) : pas d'ack, le message reste dans la file
+  et est traité au retour du service (aucune perte).
+
+### 9.3 Métriques exposées (Prometheus)
+- `monitoring-service:9102/metrics` : `monitoring_measures_processed_total`, `monitoring_measures_duplicates_total`,
+  `monitoring_measures_rejected_total`, `monitoring_seq_gaps_total`,
+  `monitoring_health_events_published_total{state}`, `monitoring_pending_events`,
+  `monitoring_health_score{machine_id}`, `monitoring_process_seconds`.
+- RabbitMQ expose déjà ses métriques sur `rabbitmq:15692` (longueur des files).
+
+## 10. Interfaces nécessaires aux scénarios de panne (proposition, à valider) (proposées par BEN DRIOUICHE Maryam)
+### 10.1 API du simulateur (pilotage)
+| Méthode | Route | Corps | Effet |
+|---|---|---|---|
+| POST | `/faults` | `{"machine_id":"M-01","type":"overheat"}` | Déclenche une panne : `overheat`, `vibration_drift`, `stop` (cesse d'émettre), `sensor_cut` |
+| DELETE | `/faults/{machine_id}` | | Arrête la panne, retour à la normale |
+| GET | `/faults` | | Liste les pannes en cours avec leur heure de début (UTC) |
+
+Chaque panne injectée est journalisée avec son heure de début (pour mesurer le délai de détection).
+
+### 10.2 Compteurs de preuve « 0 perte »
+- ingestion-service : `GET /stats` → `{"accepted": N, "rejected": M}` (mesures acceptées en 202 depuis le démarrage).
+- Le simulateur journalise le dernier `seq` envoyé par machine.
+
+### 10.3 Colonnes utiles aux tests
+- `health_scores` : `event_id` (UNIQUE), `machine_id`, `state`, `health_score`, `reasons`, `samples`,
+  `window_end`, **`received_at timestamptz DEFAULT now()`**.
+- `alerts` : `machine_id`, `type`, `severity`, `status` (`active`/`resolved`), `created_at`, `resolved_at`.
