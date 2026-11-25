@@ -102,6 +102,19 @@ class Engine:
                 self._publish_if_due(mid, m, now, window_end)
 
     # ---------- événements ----------
+    @staticmethod
+    def _score_for_state(m) -> int:
+        """Score publié, cohérent avec l'ÉTAT STABLE (contrat v1.1 : OK >= 70, WARN <= 69,
+        CRIT <= 39, SILENT = 0). Pendant la confirmation d'un changement d'état, le score
+        de la dernière mesure peut contredire l'état encore affiché : on le ramène dans la bande."""
+        if m.stable == "SILENT":
+            return 0
+        if m.stable == "CRIT":
+            return min(m.score, 39)
+        if m.stable == "WARN":
+            return min(m.score, 69)
+        return max(m.score, 70)
+
     def _publish_if_due(self, mid, m, now, window_end):
         if m.stable is None:
             return
@@ -112,7 +125,7 @@ class Engine:
             "event_id": str(uuid.uuid4()),
             "machine_id": mid,
             "window_end": iso(window_end),
-            "health_score": m.score,
+            "health_score": self._score_for_state(m),
             "state": m.stable,
             "reasons": m.reasons,
             "samples": len(m.window),
