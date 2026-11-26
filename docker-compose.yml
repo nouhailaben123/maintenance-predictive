@@ -16,6 +16,7 @@ services:
       timeout: 10s
       retries: 10
       start_period: 20s  
+    restart: unless-stopped
   rabbitmq-init:
     image: curlimages/curl:8.10.1
     depends_on:
@@ -37,6 +38,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   monitoring-service:
     build: ./services/monitoring-service
     restart: unless-stopped
@@ -54,7 +63,8 @@ services:
       rabbitmq-init:
         condition: service_completed_successfully
       postgres:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   rabbitmq_data:
+  pgdata:
