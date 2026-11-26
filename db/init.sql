@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS measurements (
     temperature_c double precision,
     vibration_mms double precision,
     power_kw      double precision,
-    rpm           double precision
+    rpm           double precision,
+    received_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_meas_machine_ts
     ON measurements (machine_id, "timestamp");
