@@ -47,16 +47,18 @@ CREATE INDEX IF NOT EXISTS idx_health_machine_end
     ON health_scores (machine_id, window_end);
 
 CREATE TABLE IF NOT EXISTS alerts (
-    id          bigserial PRIMARY KEY,
-    machine_id  text NOT NULL,
-    type        text NOT NULL,
-    state       text NOT NULL DEFAULT 'active',  -- active | resolved
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    resolved_at timestamptz
+    id            bigserial PRIMARY KEY,
+    machine_id    text NOT NULL,
+    type          text NOT NULL,
+    severity      text NOT NULL,
+    status        text NOT NULL DEFAULT 'active',  -- active | resolved
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    resolved_at   timestamptz,
+    last_event_id text
 );
 -- une seule alerte active par machine et par type
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_alert
-    ON alerts (machine_id, type) WHERE state = 'active';
+    ON alerts (machine_id, type) WHERE status = 'active';
 
 -- Données de départ
 INSERT INTO machines (machine_id, type) VALUES
