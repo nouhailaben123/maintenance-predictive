@@ -13,7 +13,7 @@ from .window import Sample
 log = logging.getLogger("runner")
 
 def _connect():
-    delay = 2
+    delay = 1
     while True:
         try:
             return pika.BlockingConnection(pika.ConnectionParameters(
@@ -22,7 +22,7 @@ def _connect():
         except (AMQPError, OSError) as exc:    # OSError : nom d'hôte introuvable (DNS), connexion refusée...
             log.warning("RabbitMQ indisponible (%s), nouvel essai dans %ss", exc, delay)
             time.sleep(delay)
-            delay = min(delay * 2, 30)           # backoff exponentiel plafonné
+            delay = min(delay * 2, 5)           # backoff exponentiel plafonné à 5 s
 
 def _flush(engine: Engine, ch):
     """Publie les événements en attente. Une erreur de connexion remonte (-> reconnexion)."""
