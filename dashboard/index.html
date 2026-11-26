@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supervision des machines</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#5d6678; --line:#dde1e8;
+          --ok:#1f9d55; --warn:#e08a00; --crit:#d6322f; --silent:#7b8494; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --card:#1d2129; --text:#e8ebf0; --muted:#9aa3b2; --line:#2c323d;
+            --ok:#3ccf7a; --warn:#f0a82e; --crit:#f06a67; --silent:#8d96a6; --accent:#6ea0ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 24px; background:var(--card); border-bottom:1px solid var(--line);
+           display:flex; flex-wrap:wrap; gap:14px; align-items:center; justify-content:space-between; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:16px; margin:20px 0 8px; }
+  nav button, #back { background:none; border:1px solid var(--line); color:var(--text); padding:6px 14px;
+                      border-radius:6px; cursor:pointer; font-size:14px; }
+  nav button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  main { padding:20px 24px; max-width:1200px; margin:0 auto; }
+  .banner { background:var(--crit); color:#fff; padding:10px 24px; display:none; }
+  .muted { color:var(--muted); font-size:13px; }
+  .counters { display:flex; flex-wrap:wrap; gap:10px; }
+  .counter { background:var(--card); border:1px solid var(--line); border-top:4px solid var(--silent);
+             border-radius:8px; padding:8px 18px; min-width:110px; }
+  .counter b { display:block; font-size:24px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:14px; margin-top:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-left:6px solid var(--silent);
+          border-radius:8px; padding:14px; cursor:pointer; }
+  .OK { border-color:var(--ok); } .WARN { border-color:var(--warn); }
+  .CRIT { border-color:var(--crit); } .SILENT { border-color:var(--silent); }
+  .card h3 { margin:0; font-size:16px; }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:8px; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:10px; font-size:12px; color:#fff; background:var(--silent); }
+  .badge.OK { background:var(--ok); } .badge.WARN { background:var(--warn); }
+  .badge.CRIT { background:var(--crit); } .badge.SILENT { background:var(--silent); }
+  .badge.up { background:var(--ok); } .badge.down { background:var(--crit); }
+  .score { font-size:30px; font-weight:600; }
+  .vals { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; margin-top:10px; font-size:13px; }
+  .vals b { font-size:15px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; margin:12px 0; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 14px; }
+  .tile b { font-size:22px; display:block; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr)); gap:14px; }
+  .chart-box { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; height:230px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0; }
+  select { padding:6px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:14px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Supervision des machines industrielles</h1>
+  <nav>
+    <button data-view="overview" class="active">Machines</button>
+    <button data-view="alerts">Alertes</button>
+    <button data-view="system">État du système</button>
+  </nav>
+  <span class="muted" id="updated"></span>
+</header>
+<div class="banner" id="banner">API indisponible : les données affichées peuvent être obsolètes.</div>
+<main>
+  <section id="view-overview">
+    <div class="counters" id="counters"></div>
+    <div class="grid" id="machines"></div>
+  </section>
+  <section id="view-detail" class="hidden">
+    <button id="back">← Retour aux machines</button>
+    <h2 id="detail-title"></h2>
+    <div id="detail-head"></div>
+    <div class="tiles" id="tiles"></div>
+    <div class="charts" id="charts"></div>
+  </section>
+  <section id="view-alerts" class="hidden">
+    <div class="toolbar">
+      <label>Machine : <select id="f-machine"><option value="">Toutes</option></select></label>
+      <label>Gravité : <select id="f-severity"><option value="">Toutes</option><option>WARN</option><option>CRIT</option></select></label>
+      <label>Statut : <select id="f-state"><option value="">Tous</option><option value="active">Active</option><option value="resolved">Résolue</option></select></label>
+    </div>
+    <table><thead><tr><th>Créée le</th><th>Machine</th><th>Type</th><th>Gravité</th><th>Statut</th><th>Résolue le</th></tr></thead>
+    <tbody id="alerts-body"></tbody></table>
+  </section>
+  <section id="view-system" class="hidden">
+    <h2>Services</h2><div class="grid" id="services"></div>
+    <h2>Files RabbitMQ</h2>
+    <table><thead><tr><th>File</th><th>Messages en attente</th><th>Consommateurs</th></tr></thead>
+    <tbody id="queues-body"></tbody></table>
+    <p class="muted" id="rate"></p>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+// ====================== Configuration ======================
+const USE_FAKE = true;                    // passer à false quand la query-api est prête
+const API_URL = "http://localhost:8000";
+const REFRESH_MS = 5000;
+
+const STATE_LABEL = { OK: "OK", WARN: "Attention", CRIT: "Critique", SILENT: "Silencieuse" };
+const STATUS_LABEL = { running: "En marche", idle: "Au ralenti", stopped: "Arrêtée" };
+const METRICS = {
+  temperature_c: { label: "Température", unit: "°C", color: "#e5484d" },
+  vibration_mms: { label: "Vibration", unit: "mm/s", color: "#8e4ec6" },
+  power_kw:      { label: "Consommation électrique", unit: "kW", color: "#f5a623" },
+  rpm:           { label: "Vitesse de rotation", unit: "tr/min", color: "#2563eb" },
+};
+
+// ====================== Couche données ======================
+// Contrat avec la query-api (à valider avec l’étudiant 2). Les noms de champs suivent docs/contrat.md v1.2.
+//  GET /machines -> [{machine_id, type, status, state, health_score, reasons[], window_end,
+//                     latest:{timestamp, temperature_c, vibration_mms, power_kw, rpm}}]
+//  GET /machines/{id}/measurements?limit=60 -> [{timestamp, temperature_c, vibration_mms, power_kw, rpm}]
+//  GET /machines/{id}/health?minutes=30 -> [{window_end, health_score, state}]
+//  GET /alerts -> [{id, machine_id, type, severity, status, created_at, resolved_at}]
+//  GET /system -> {services:[{name, status}], queues:[{name, messages_ready, consumers}], measures_per_min}
+//     (maquette : l’état réel viendra de Prometheus et Grafana)
+const ago = min => new Date(Date.now() - min * 60000).toISOString();
+const mk = (id, type, status, state, score, reasons, seenS, t, v, p, r) => ({ machine_id: id, type, status, state,
+  health_score: score, reasons, window_end: new Date().toISOString(),
+  latest: { timestamp: new Date(Date.now() - seenS * 1000).toISOString(), temperature_c: t, vibration_mms: v, power_kw: p, rpm: r } });
+const FAKE_MACHINES = [
+  mk("M-01", "moteur", "running", "OK", 96, [], 3, 68.2, 2.9, 21.4, 2985),
+  mk("M-02", "moteur", "running", "WARN", 62, ["vibration_zscore>3"], 2, 77.9, 5.1, 26.8, 2960),
+  mk("M-03", "compresseur", "running", "CRIT", 21, ["temperature_crit"], 4, 112.4, 6.3, 63.0, 1490),
+  mk("M-04", "compresseur", "idle", "OK", 91, ["declared_idle"], 3, 41.0, 0.8, 4.2, 0),
+  mk("M-05", "convoyeur", "running", "SILENT", 0, ["no_data>15s"], 140, 35.5, 0.2, 0.0, 0),
+  mk("M-06", "convoyeur", "running", "OK", 88, [], 2, 52.3, 2.2, 9.8, 1452),
+];
+const FAKE_ALERTS = [
+  { id: 3, machine_id: "M-03", type: "temperature", severity: "CRIT", status: "active", created_at: ago(4), resolved_at: null },
+  { id: 2, machine_id: "M-02", type: "vibration", severity: "WARN", status: "active", created_at: ago(18), resolved_at: null },
+  { id: 1, machine_id: "M-05", type: "no_data", severity: "WARN", status: "resolved", created_at: ago(95), resolved_at: ago(90) },
+];
+const FAKE_SYSTEM = {
+  services: ["simulator", "ingestion", "monitoring-service", "storage-service", "alert-service", "query-api", "rabbitmq", "postgres"]
+    .map(n => ({ name: n, status: n === "alert-service" ? "down" : "up" })),
+  queues: [["q.storage", 0, 1], ["q.monitoring", 2, 1], ["q.alerts", 14, 0], ["q.health.store", 0, 1], ["q.dead", 0, 0]]
+    .map(([name, messages_ready, consumers]) => ({ name, messages_ready, consumers })),
+  measures_per_min: 360,
+};
+function fakeMeasurements(id) {
+  const m = FAKE_MACHINES.find(x => x.machine_id === id);
+  return Array.from({ length: 60 }, (_, i) => {
+    const row = { timestamp: ago(59 - i) };
+    for (const k in METRICS) {
+      const end = m.latest[k], k0 = end * (m.state === "OK" ? 1 : 0.8);
+      row[k] = +(k0 + (end - k0) * i / 59 + Math.sin(i / 5) * end * 0.02 + (Math.random() - 0.5) * end * 0.02).toFixed(2);
+    }
+    return row;
+  });
+}
+function fakeHealth(id) {
+  const m = FAKE_MACHINES.find(x => x.machine_id === id);
+  return Array.from({ length: 60 }, (_, i) => ({ window_end: ago(59 - i), state: m.state,
+    health_score: Math.max(0, Math.min(100, Math.round(100 - (100 - m.health_score) * i / 59 + (Math.random() - 0.5) * 4))) }));
+}
+
+async function api(path) {
+  const res = await fetch(API_URL + path);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+const getMachines = () => USE_FAKE ? Promise.resolve(FAKE_MACHINES) : api("/machines");
+const getMeasurements = id => USE_FAKE ? Promise.resolve(fakeMeasurements(id)) : api(`/machines/${id}/measurements?limit=60`);
+const getHealth = id => USE_FAKE ? Promise.resolve(fakeHealth(id)) : api(`/machines/${id}/health?minutes=30`);
+const getAlerts = () => USE_FAKE ? Promise.resolve(FAKE_ALERTS) : api("/alerts");
+const getSystem = () => USE_FAKE ? Promise.resolve(FAKE_SYSTEM) : api("/system");
+
+// ====================== Affichage ======================
+const $ = s => document.querySelector(s);
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;   // textContent : pas d’injection HTML
+  return e;
+}
+const hhmm = ts => new Date(ts).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+const REASONS = {
+  temperature_warn: "Température élevée", temperature_crit: "Température critique",
+  vibration_warn: "Vibration élevée", vibration_crit: "Vibration critique",
+  power_warn: "Consommation élevée", power_crit: "Consommation critique",
+  rpm_warn: "Vitesse hors plage", rpm_crit: "Vitesse critique",
+  "temperature_zscore>3": "Température anormale (écart statistique)", "vibration_zscore>3": "Vibration anormale (écart statistique)",
+  "power_zscore>3": "Consommation anormale (écart statistique)", "rpm_zscore>3": "Vitesse anormale (écart statistique)",
+  "no_data>15s": "Aucune donnée depuis plus de 15 s", declared_idle: "Machine déclarée au ralenti", declared_stopped: "Machine déclarée arrêtée",
+};
+const ALERT_TYPES = { temperature: "Température", vibration: "Vibration", power: "Consommation", rpm: "Vitesse", no_data: "Machine silencieuse" };
+const reasonText = r => REASONS[r] || r;
+const ageS = m => Math.max(0, Math.round((Date.now() - new Date(m.latest.timestamp)) / 1000));
+const seen = s => s < 60 ? `il y a ${s} s` : `il y a ${Math.round(s / 60)} min`;
+
+let machines = [], alerts = [], currentId = null, currentView = "overview", charts = [];
+
+function showView(name) {
+  currentView = name;
+  for (const v of ["overview", "detail", "alerts", "system"]) $("#view-" + v).classList.toggle("hidden", v !== name);
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === (name === "detail" ? "overview" : name)));
+  refresh();
+}
+
+function renderOverview() {
+  const box = $("#counters");
+  box.replaceChildren();
+  for (const s of ["OK", "WARN", "CRIT", "SILENT"]) {
+    const c = el("div", "counter " + s);
+    c.append(el("b", "", String(machines.filter(m => m.state === s).length)), el("span", "muted", STATE_LABEL[s]));
+    box.append(c);
+  }
+  const grid = $("#machines");
+  grid.replaceChildren();
+  for (const m of machines) {
+    const card = el("div", "card " + m.state);
+    const top = el("div", "row");
+    top.append(el("h3", "", m.machine_id), el("span", "badge " + m.state, STATE_LABEL[m.state]));
+    const mid = el("div", "row");
+    mid.append(el("span", "muted", `${m.type} · ${STATUS_LABEL[m.status] || m.status}`), el("span", "score", String(m.health_score)));
+    const vals = el("div", "vals");
+    for (const k in METRICS) {
+      const cell = el("div");
+      cell.append(el("span", "muted", METRICS[k].label), el("br"), el("b", "", `${m.latest[k]} ${METRICS[k].unit}`));
+      vals.append(cell);
+    }
+    card.append(top, mid, vals, el("div", "muted", (m.reasons.length ? m.reasons.map(reasonText).join(", ") + " · " : "") + seen(ageS(m))));
+    card.style.marginTop = "0";
+    card.onclick = () => { currentId = m.machine_id; showView("detail"); };
+    grid.append(card);
+  }
+}
+
+function drawChart(box, title, labels, data, color, fixed) {
+  const wrap = el("div", "chart-box");
+  const canvas = el("canvas");
+  wrap.append(canvas);
+  box.append(wrap);
+  charts.push(new Chart(canvas, { type: "line",
+    data: { labels, datasets: [{ data, borderColor: color, tension: 0.25, pointRadius: 0 }] },
+    options: { maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false }, title: { display: true, text: title } },
+      scales: fixed ? { y: { min: 0, max: 100 } } : {} } }));
+}
+
+async function renderDetail() {
+  const m = machines.find(x => x.machine_id === currentId);
+  if (!m) return;
+  $("#detail-title").textContent = `${m.machine_id} · ${m.type}`;
+  const head = $("#detail-head");
+  head.replaceChildren();
+  const row = el("div", "row");
+  row.style.justifyContent = "flex-start";
+  row.append(el("span", "badge " + m.state, STATE_LABEL[m.state]), el("span", "", `Score de santé : ${m.health_score}/100`),
+             el("span", "muted", `${STATUS_LABEL[m.status] || m.status} · dernière mesure ${seen(ageS(m))}`));
+  head.append(row);
+  if (m.reasons.length) head.append(el("p", "muted", "Raisons : " + m.reasons.map(reasonText).join(", ")));
+  const tiles = $("#tiles");
+  tiles.replaceChildren();
+  for (const k in METRICS) {
+    const t = el("div", "tile");
+    t.append(el("span", "muted", METRICS[k].label), el("b", "", `${m.latest[k]} ${METRICS[k].unit}`));
+    tiles.append(t);
+  }
+  const [rows, health] = await Promise.all([getMeasurements(currentId), getHealth(currentId)]);
+  charts.forEach(c => c.destroy());
+  charts = [];
+  const box = $("#charts");
+  box.replaceChildren();
+  for (const k in METRICS) drawChart(box, `${METRICS[k].label} (${METRICS[k].unit})`, rows.map(r => hhmm(r.timestamp)), rows.map(r => r[k]), METRICS[k].color, false);
+  drawChart(box, "Score de santé (0 à 100)", health.map(h => hhmm(h.window_end)), health.map(h => h.health_score), "#1f9d55", true);
+}
+
+function renderAlerts() {
+  const sel = $("#f-machine");
+  if (sel.options.length <= 1) for (const m of machines) sel.append(new Option(`${m.machine_id} · ${m.type}`, m.machine_id));
+  const fm = sel.value, fs = $("#f-severity").value, fst = $("#f-state").value;
+  const body = $("#alerts-body");
+  body.replaceChildren();
+  for (const a of alerts.filter(a => (!fm || a.machine_id === fm) && (!fs || a.severity === fs) && (!fst || a.status === fst))) {
+    const tr = el("tr");
+    tr.append(el("td", "", new Date(a.created_at).toLocaleString("fr-FR")), el("td", "", a.machine_id), el("td", "", ALERT_TYPES[a.type] || a.type),
+              el("td", "", a.severity), el("td", "", a.status === "active" ? "Active" : "Résolue"),
+              el("td", "", a.resolved_at ? new Date(a.resolved_at).toLocaleString("fr-FR") : "—"));
+    body.append(tr);
+  }
+}
+
+async function renderSystem() {
+  const s = await getSystem();
+  const grid = $("#services");
+  grid.replaceChildren();
+  for (const sv of s.services) {
+    const c = el("div", "card " + (sv.status === "up" ? "OK" : "CRIT"));
+    c.style.cursor = "default";
+    const r = el("div", "row");
+    r.style.marginTop = "0";
+    r.append(el("b", "", sv.name), el("span", "badge " + sv.status, sv.status === "up" ? "En marche" : "Arrêté"));
+    c.append(r);
+    grid.append(c);
+  }
+  const body = $("#queues-body");
+  body.replaceChildren();
+  for (const q of s.queues) {
+    const tr = el("tr");
+    tr.append(el("td", "", q.name), el("td", "", String(q.messages_ready)), el("td", "", String(q.consumers)));
+    body.append(tr);
+  }
+  $("#rate").textContent = `Débit : ${s.measures_per_min} mesures par minute`;
+}
+
+async function refresh() {
+  try {
+    machines = await getMachines();
+    alerts = await getAlerts();
+    if (currentView === "overview") renderOverview();
+    if (currentView === "detail") await renderDetail();
+    if (currentView === "alerts") renderAlerts();
+    if (currentView === "system") await renderSystem();
+    $("#banner").style.display = "none";
+    $("#updated").textContent = "Mise à jour : " + new Date().toLocaleTimeString("fr-FR");
+  } catch (err) {
+    $("#banner").style.display = "block";   // panne de l’API : on prévient sans planter
+    console.error(err);
+  }
+}
+
+// ====================== Démarrage ======================
+["#f-machine", "#f-severity", "#f-state"].forEach(s => $(s).onchange = renderAlerts);
+$("#back").onclick = () => showView("overview");
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => showView(b.dataset.view));
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
