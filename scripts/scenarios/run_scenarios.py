@@ -147,15 +147,27 @@ def db_alert_count(machine, since):
 
 def db_last_seq():
     rows = pg("SELECT machine_id, max(seq) FROM measurements GROUP BY machine_id")
-    return dict(rows) if rows else None
+    return dict(rows) if rows is not None else None      # {} si la table est vide, None si injoignable
+
+
+def db_stored_count(message_ids):
+    """Combien de ces message_id existent dans measurements (preuve « aucune mesure acceptée puis perdue »)."""
+    if not message_ids:
+        return 0
+    rows = pg("SELECT count(*) FROM measurements WHERE message_id = ANY(%s)", list(message_ids))
+    return rows[0][0] if rows else None
 
 
 def db_integrity(since):
     """Perte / doublons dans measurements depuis le relevé `since` (None si pas de données)."""
-    if not since:
+    if since is None:
+        return None
+    machines = pg("SELECT DISTINCT machine_id FROM measurements")
+    if machines is None:
         return None
     missing = dup = 0
-    for mid, lo in since.items():
+    for (mid,) in machines:
+        lo = since.get(mid, 0)       # machine absente du relevé initial (table vide au départ) : depuis le début
         rows = pg("SELECT count(*), count(DISTINCT seq), min(seq), max(seq) FROM measurements "
                   "WHERE machine_id=%s AND seq>%s", mid, lo)
         if rows is None:
@@ -428,8 +440,17 @@ def s4_service_down(service, queue, duration=30):
         ok = ok and r.data["seq_trous_vus_par_monitoring"] in (0, 0.0)
     else:
         integ = db_integrity(db_before)
-        r.data["base"] = integ if integ is not None else "non vérifiable (base vide ou injoignable)"
-        ok = ok and integ is not None and integ["db_manquants"] == 0 and integ["db_doublons"] == 0
+        r.data["base"] = integ if integ is not None else "non vérifiable (base injoignable)"
+        # Bout en bout : chaque mesure publiée (vue sur measures.fanout) est-elle dans PostgreSQL ?
+        # On écarte les 6 dernières secondes : leurs messages peuvent être encore en route vers la base.
+        cutoff = time.time() - 6
+        ids = {m["message_id"] for m in spy.measures[mark:] if m["t"] <= cutoff}
+        stored = db_stored_count(ids)
+        r.data["publiees_uniques"] = len(ids)
+        r.data["retrouvees_en_base"] = stored
+        r.data["perdues_avant_la_base"] = None if stored is None else len(ids) - stored
+        ok = (ok and integ is not None and integ["db_manquants"] == 0 and integ["db_doublons"] == 0
+              and stored is not None and stored == len(ids))
     r.ok = ok
     return r
 
