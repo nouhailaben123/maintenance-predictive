@@ -4,6 +4,7 @@ import time
 
 import pika
 import psycopg
+from psycopg.types.json import Jsonb
 
 RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 RABBITMQ_USER = os.environ.get("RABBITMQ_USER", "admin")
@@ -12,14 +13,23 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "admin")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "admin123")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "maintenance")
-QUEUE = "q.storage"
 
-INSERT_SQL = """
+QUEUE_MEASURES = "q.storage"
+QUEUE_HEALTH = "q.health.store"
+
+MEASURE_SQL = """
 INSERT INTO measurements
     (message_id, machine_id, seq, "timestamp", status,
      temperature_c, vibration_mms, power_kw, rpm)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (message_id) DO NOTHING
+"""
+
+HEALTH_SQL = """
+INSERT INTO health_scores
+    (event_id, machine_id, state, health_score, reasons, samples, window_end)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (event_id) DO NOTHING
 """
 
 db = None
@@ -43,47 +53,67 @@ def connect_db():
             time.sleep(3)
 
 
-def on_message(channel, method, properties, body):
-    global db
+def parse_measure(msg):
+    values = msg["values"]
+    return (
+        msg["message_id"],
+        msg["machine_id"],
+        msg["seq"],
+        msg["timestamp"],
+        msg["status"],
+        values.get("temperature_c"),
+        values.get("vibration_mms"),
+        values.get("power_kw"),
+        values.get("rpm"),
+    )
 
-    # 1. Parse the message. If it is invalid, send it to the dead letter queue.
-    try:
-        msg = json.loads(body)
-        values = msg["values"]
-        row = (
-            msg["message_id"],
-            msg["machine_id"],
-            msg["seq"],
-            msg["timestamp"],
-            msg["status"],
-            values.get("temperature_c"),
-            values.get("vibration_mms"),
-            values.get("power_kw"),
-            values.get("rpm"),
-        )
-    except (ValueError, KeyError, TypeError, AttributeError):
-        print("[storage] invalid message -> dead letter queue", flush=True)
-        channel.basic_nack(method.delivery_tag, requeue=False)
-        return
 
-    # 2. Insert into the database.
-    try:
-        db.execute(INSERT_SQL, row)
-    except (psycopg.OperationalError, psycopg.InterfaceError):
-        # Database down: do NOT ack, the message goes back to the queue.
-        print("[storage] database down, message kept in queue", flush=True)
-        channel.basic_nack(method.delivery_tag, requeue=True)
-        time.sleep(3)
-        db = connect_db()
-        return
-    except psycopg.Error as exc:
-        # Data the database refuses (bad value): send to the dead letter queue.
-        print(f"[storage] bad data -> dead letter queue: {exc}", flush=True)
-        channel.basic_nack(method.delivery_tag, requeue=False)
-        return
+def parse_health(msg):
+    return (
+        msg["event_id"],
+        msg["machine_id"],
+        msg["state"],
+        int(msg["health_score"]),
+        Jsonb(msg.get("reasons", [])),
+        msg.get("samples"),
+        msg["window_end"],
+    )
 
-    # 3. Everything worked: confirm to RabbitMQ.
-    channel.basic_ack(method.delivery_tag)
+
+def make_handler(name, parse, sql):
+    """Build the callback of one queue: parse, insert, then ack."""
+
+    def handler(channel, method, properties, body):
+        global db
+
+        # 1. Parse the message. If it is invalid, send it to the dead letter queue.
+        try:
+            row = parse(json.loads(body))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            print(f"[storage] {name}: invalid message -> dead letter queue", flush=True)
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+
+        # 2. Insert into the database.
+        try:
+            db.execute(sql, row)
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            # Database down: do NOT ack, the message goes back to the queue.
+            print(f"[storage] {name}: database down, message kept in queue", flush=True)
+            channel.basic_nack(method.delivery_tag, requeue=True)
+            time.sleep(3)
+            db = connect_db()
+            return
+        except psycopg.Error as exc:
+            # Data the database refuses (bad value): send to the dead letter queue.
+            print(f"[storage] {name}: bad data -> dead letter queue: {exc}", flush=True)
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
+
+        # 3. Everything worked: confirm to RabbitMQ.
+        channel.basic_ack(method.delivery_tag)
+
+    return handler
 
 
 def main():
@@ -101,8 +131,15 @@ def main():
             )
             channel = connection.channel()
             channel.basic_qos(prefetch_count=50)
-            channel.basic_consume(queue=QUEUE, on_message_callback=on_message)
-            print(f"[storage] waiting for messages on {QUEUE}", flush=True)
+            channel.basic_consume(
+                queue=QUEUE_MEASURES,
+                on_message_callback=make_handler("measures", parse_measure, MEASURE_SQL),
+            )
+            channel.basic_consume(
+                queue=QUEUE_HEALTH,
+                on_message_callback=make_handler("health", parse_health, HEALTH_SQL),
+            )
+            print(f"[storage] waiting for messages on {QUEUE_MEASURES} and {QUEUE_HEALTH}", flush=True)
             channel.start_consuming()
         except pika.exceptions.AMQPConnectionError as exc:
             print(f"[storage] RabbitMQ not reachable: {exc}", flush=True)
