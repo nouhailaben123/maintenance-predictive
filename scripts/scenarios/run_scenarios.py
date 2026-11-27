@@ -9,7 +9,9 @@ Usage (depuis la racine du dépôt, venv du monitoring activé, variables charg�
     python scripts/scenarios/run_scenarios.py --runs 3          # tous les scénarios, 3 essais chacun
 
 Scénarios : 1 surchauffe, 2 dérive de vibration, 3 machine silencieuse,
-            4a arrêt du stockage, 4b arrêt du monitoring, 5 RabbitMQ coupé + message invalide.
+            4a arrêt du stockage, 4b arrêt du monitoring, 5 RabbitMQ coupé + message invalide,
+            6 faux positifs (aucune panne injectée, durée --minutes, à lancer à part).
+    python scripts/scenarios/run_scenarios.py 6 --minutes 30 --label "Z_WARN=3"
 Résultats : docs/tests/scenarios_results.md
 """
 import argparse
@@ -49,6 +51,8 @@ PG_DSN = (f"host={os.getenv('POSTGRES_HOST', 'localhost')} port=5432 "
           f"user={os.getenv('POSTGRES_USER', 'admin')} password={os.getenv('POSTGRES_PASSWORD', 'admin123')}")
 VIB_WARN_LIMIT = 6.0     # seuils du type "default" (db/init.sql)
 VIB_CRIT_LIMIT = 8.0
+MINUTES = 30.0           # durée du scénario 6 (option --minutes)
+LABEL = "réglage par défaut"   # étiquette libre du scénario 6 (option --label), ex. "Z_WARN=3.5"
 
 
 @dataclass
@@ -345,7 +349,7 @@ def s2_drift():
     # La fenêtre glissante (60 mesures, soit ~60 s) garde la mémoire du test précédent : sans ce délai, les
     # valeurs hautes de l'essai d'avant gonflent l'écart-type et le z-score devient insensible.
     log("attente de 70 s : la fenêtre doit se remplir de mesures normales ...")
-    time.sleep(70)
+    drain_for(70)
     t0 = time.time()
     sim_mode(MACHINE, "vibration_drift")
 
@@ -511,11 +515,111 @@ def s5_rabbit_and_invalid():
     return r
 
 
+def drain_for(seconds, step=1.0):
+    """Attend en lisant les espions en continu (sinon les horodatages des messages en attente seraient faux)."""
+    end = time.time() + seconds
+    while time.time() < end:
+        spy.drain()
+        time.sleep(min(step, max(0.0, end - time.time())))
+
+
+def false_alert_episodes(events, t0, t_end):
+    """Épisodes pendant lesquels une machine saine n'est pas à OK : une fausse alerte = un épisode.
+    Un épisode commence au 1er événement non-OK et finit à l'événement OK suivant."""
+    episodes, current = [], {}
+    for e in sorted((x for x in events if t0 <= x["t"] <= t_end), key=lambda x: x["t"]):
+        mid = e["machine_id"]
+        cur = current.get(mid)
+        if e["state"] == "OK":
+            if cur:
+                cur["duration"] = e["t"] - cur["start"]
+                episodes.append(cur)
+                current[mid] = None
+        elif cur is None:
+            current[mid] = {"machine_id": mid, "state": e["state"], "reasons": e["reasons"], "start": e["t"]}
+        elif e["state"] == "CRIT":
+            cur["state"] = "CRIT"                      # escalade au sein du même épisode
+    for cur in current.values():
+        if cur:                                        # épisode encore en cours à la fin de l'observation
+            cur["duration"] = t_end - cur["start"]
+            cur["ongoing"] = True
+            episodes.append(cur)
+    return episodes
+
+
+def classify_cause(reasons, state):
+    if state == "SILENT":
+        return "silence"
+    first = reasons[0] if reasons else ""
+    if "zscore" in first:
+        return "ecart_statistique"
+    if first.endswith("_warn") or first.endswith("_crit"):
+        return "limite_fixe"
+    return "autre"
+
+
+def s6_false_positives():
+    """Aucune panne injectée : toute alerte est une fausse alerte. Durée : --minutes (défaut 30)."""
+    r = Result("6. Faux positifs (aucune panne injectée)")
+    try:
+        code, machines = http("GET", f"{SIM}/machines", timeout=5)
+    except OSError:
+        code, machines = None, None
+    ids = sorted(machines) if code == 200 and machines else [MACHINE]
+    for mid in ids:
+        if ensure_ok(mid) is None:
+            r.data["erreur"] = f"{mid} pas à OK au départ"
+            return r
+    log("attente de 70 s : les fenêtres doivent se remplir de mesures normales ...")
+    drain_for(70)
+    t0 = time.time()
+    t_end = t0 + MINUTES * 60
+    log(f"observation de {len(ids)} machine(s) pendant {MINUTES:g} min, sans aucune panne ...")
+    next_log = t0 + 300
+    try:
+        while time.time() < t_end:
+            spy.drain()
+            time.sleep(1)
+            if time.time() >= next_log:
+                n = len(false_alert_episodes(spy.events, t0, time.time()))
+                log(f"... {int((time.time() - t0) / 60)} min écoulées, {n} fausse(s) alerte(s) jusqu'ici")
+                next_log += 300
+    except KeyboardInterrupt:
+        log("interrompu : calcul sur la durée observée")
+    t_obs = time.time()
+    spy.drain()
+    minutes = (t_obs - t0) / 60
+    eps = false_alert_episodes(spy.events, t0, t_obs)
+    durations = [e["duration"] for e in eps if not e.get("ongoing")]
+    causes = {}
+    for e in eps:
+        c = classify_cause(e["reasons"], e["state"])
+        causes[c] = causes.get(c, 0) + 1
+    hours = minutes / 60
+    r.data.update({
+        "reglage": LABEL, "machines": len(ids), "observation_min": round(minutes, 1),
+        "fausses_alertes": len(eps),
+        "par_heure": round(len(eps) / hours, 2) if hours > 0 else None,
+        "par_machine_et_heure": round(len(eps) / len(ids) / hours, 2) if hours > 0 else None,
+        "duree_moyenne_s": r1(statistics.mean(durations)) if durations else None,
+        "duree_max_s": r1(max(durations)) if durations else None,
+        "dont_crit": sum(1 for e in eps if e["state"] == "CRIT"),
+        "dont_silence": sum(1 for e in eps if e["state"] == "SILENT"),
+        "causes": causes,
+        "detail": [f"{e['machine_id']} {e['state']} {e['reasons'][:1]} {r1(e['duration'])}s" for e in eps],
+    })
+    # Réussi : observation complète (>= 90 % de la durée demandée) et aucune fausse alerte grave (CRIT ou SILENT).
+    # Le taux de WARN n'est pas jugé : il est rapporté, et se compare d'un réglage à l'autre.
+    r.ok = minutes >= 0.9 * MINUTES and r.data["dont_crit"] == 0 and r.data["dont_silence"] == 0
+    return r
+
+
 SCENARIOS = {
     "1": s1_overheat, "2": s2_drift, "3": s3_silent,
     "4a": lambda: s4_service_down("storage-service", "q.storage"),
     "4b": lambda: s4_service_down("monitoring-service", "q.monitoring"),
     "5": s5_rabbit_and_invalid,
+    "6": s6_false_positives,      # long (--minutes) : exclu de l'exécution par défaut
 }
 
 
@@ -567,14 +671,16 @@ def preflight():
 
 
 def main():
-    global MACHINE
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("scenarios", nargs="*", help="1 2 3 4a 4b 5 (défaut : tous)")
+    global MACHINE, MINUTES, LABEL
+    ap =argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("scenarios", nargs="*", help="1 2 3 4a 4b 5 6 (défaut : 1 à 5 ; le 6 est long, à demander)")
+    ap.add_argument("--minutes", type=float, default=MINUTES, help="durée d'observation du scénario 6 (défaut 30)")
+    ap.add_argument("--label", default=LABEL, help="étiquette du réglage testé au scénario 6, ex. 'Z_WARN=3.5'")
     ap.add_argument("--runs", type=int, default=1, help="nombre d'essais par scénario (3 pour le rapport)")
     ap.add_argument("--machine", default=MACHINE)
     args = ap.parse_args()
-    MACHINE = args.machine
-    wanted = args.scenarios or list(SCENARIOS)
+    MACHINE, MINUTES, LABEL = args.machine, args.minutes, args.label
+    wanted = args.scenarios or [k for k in SCENARIOS if k != "6"]
     unknown = [k for k in wanted if k not in SCENARIOS]
     if unknown:
         sys.exit(f"scénario(s) inconnu(s) : {unknown}")
