@@ -77,26 +77,29 @@
   <section id="view-alerts" class="hidden">
     <div class="toolbar">
       <label>Machine : <select id="f-machine"><option value="">Toutes</option></select></label>
-      <label>Gravité : <select id="f-severity"><option value="">Toutes</option><option>WARN</option><option>CRIT</option></select></label>
+      <label>Gravité : <select id="f-severity"><option value="">Toutes</option><option value="WARN">Attention</option><option value="CRIT">Critique</option></select></label>
       <label>Statut : <select id="f-state"><option value="">Tous</option><option value="active">Active</option><option value="resolved">Résolue</option></select></label>
     </div>
     <table><thead><tr><th>Créée le</th><th>Machine</th><th>Type</th><th>Gravité</th><th>Statut</th><th>Résolue le</th></tr></thead>
     <tbody id="alerts-body"></tbody></table>
   </section>
   <section id="view-system" class="hidden">
-    <h2>Services</h2><div class="grid" id="services"></div>
-    <h2>Files RabbitMQ</h2>
-    <table><thead><tr><th>File</th><th>Messages en attente</th><th>Consommateurs</th></tr></thead>
-    <tbody id="queues-body"></tbody></table>
-    <p class="muted" id="rate"></p>
+    <h2>État du système</h2>
+    <p class="muted">Services, files RabbitMQ, débit et scores de santé sont suivis par Prometheus et affichés dans Grafana.</p>
+    <div class="grid">
+      <a class="card OK" href="http://localhost:3000/d/etat-systeme" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">
+        <h3>Ouvrir le tableau Grafana</h3><div class="muted">Identifiants par défaut : admin / admin</div></a>
+      <a class="card OK" href="http://localhost:9090/targets" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">
+        <h3>Cibles Prometheus</h3><div class="muted">Voir quels services sont lus</div></a>
+    </div>
   </section>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
 // ====================== Configuration ======================
-const USE_FAKE = true;                    // passer à false quand la query-api est prête
-const API_URL = "http://localhost:8000";
+const USE_FAKE = false;                    // passer à false quand la query-api est prête
+const API_URL = "http://localhost:8002";
 const REFRESH_MS = 5000;
 
 const STATE_LABEL = { OK: "OK", WARN: "Attention", CRIT: "Critique", SILENT: "Silencieuse" };
@@ -115,8 +118,6 @@ const METRICS = {
 //  GET /machines/{id}/measurements?limit=60 -> [{timestamp, temperature_c, vibration_mms, power_kw, rpm}]
 //  GET /machines/{id}/health?minutes=30 -> [{window_end, health_score, state}]
 //  GET /alerts -> [{id, machine_id, type, severity, status, created_at, resolved_at}]
-//  GET /system -> {services:[{name, status}], queues:[{name, messages_ready, consumers}], measures_per_min}
-//     (maquette : l’état réel viendra de Prometheus et Grafana)
 const ago = min => new Date(Date.now() - min * 60000).toISOString();
 const mk = (id, type, status, state, score, reasons, seenS, t, v, p, r) => ({ machine_id: id, type, status, state,
   health_score: score, reasons, window_end: new Date().toISOString(),
@@ -134,13 +135,6 @@ const FAKE_ALERTS = [
   { id: 2, machine_id: "M-02", type: "vibration", severity: "WARN", status: "active", created_at: ago(18), resolved_at: null },
   { id: 1, machine_id: "M-05", type: "no_data", severity: "WARN", status: "resolved", created_at: ago(95), resolved_at: ago(90) },
 ];
-const FAKE_SYSTEM = {
-  services: ["simulator", "ingestion", "monitoring-service", "storage-service", "alert-service", "query-api", "rabbitmq", "postgres"]
-    .map(n => ({ name: n, status: n === "alert-service" ? "down" : "up" })),
-  queues: [["q.storage", 0, 1], ["q.monitoring", 2, 1], ["q.alerts", 14, 0], ["q.health.store", 0, 1], ["q.dead", 0, 0]]
-    .map(([name, messages_ready, consumers]) => ({ name, messages_ready, consumers })),
-  measures_per_min: 360,
-};
 function fakeMeasurements(id) {
   const m = FAKE_MACHINES.find(x => x.machine_id === id);
   return Array.from({ length: 60 }, (_, i) => {
@@ -163,11 +157,13 @@ async function api(path) {
   if (!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
-const getMachines = () => USE_FAKE ? Promise.resolve(FAKE_MACHINES) : api("/machines");
+const normMachine = m => ({ ...m, state: m.state || "SILENT", health_score: m.health_score ?? 0,
+  reasons: m.reasons || (m.state ? [] : ["no_data>15s"]), status: m.status || "stopped",
+  latest: m.latest || { timestamp: new Date(0).toISOString(), temperature_c: 0, vibration_mms: 0, power_kw: 0, rpm: 0 } });
+const getMachines = async () => (USE_FAKE ? FAKE_MACHINES : await api("/machines")).map(normMachine);
 const getMeasurements = id => USE_FAKE ? Promise.resolve(fakeMeasurements(id)) : api(`/machines/${id}/measurements?limit=60`);
 const getHealth = id => USE_FAKE ? Promise.resolve(fakeHealth(id)) : api(`/machines/${id}/health?minutes=30`);
 const getAlerts = () => USE_FAKE ? Promise.resolve(FAKE_ALERTS) : api("/alerts");
-const getSystem = () => USE_FAKE ? Promise.resolve(FAKE_SYSTEM) : api("/system");
 
 // ====================== Affichage ======================
 const $ = s => document.querySelector(s);
@@ -188,9 +184,10 @@ const REASONS = {
   "no_data>15s": "Aucune donnée depuis plus de 15 s", declared_idle: "Machine déclarée au ralenti", declared_stopped: "Machine déclarée arrêtée",
 };
 const ALERT_TYPES = { temperature: "Température", vibration: "Vibration", power: "Consommation", rpm: "Vitesse", no_data: "Machine silencieuse" };
+const sevKey = s => /^crit/i.test(s || "") ? "CRIT" : "WARN";
 const reasonText = r => REASONS[r] || r;
 const ageS = m => Math.max(0, Math.round((Date.now() - new Date(m.latest.timestamp)) / 1000));
-const seen = s => s < 60 ? `il y a ${s} s` : `il y a ${Math.round(s / 60)} min`;
+const seen = s => s > 86400 ? "aucune mesure reçue" : s < 60 ? `il y a ${s} s` : `il y a ${Math.round(s / 60)} min`;
 
 let machines = [], alerts = [], currentId = null, currentView = "overview", charts = [];
 
@@ -277,36 +274,13 @@ function renderAlerts() {
   const fm = sel.value, fs = $("#f-severity").value, fst = $("#f-state").value;
   const body = $("#alerts-body");
   body.replaceChildren();
-  for (const a of alerts.filter(a => (!fm || a.machine_id === fm) && (!fs || a.severity === fs) && (!fst || a.status === fst))) {
+  for (const a of alerts.filter(a => (!fm || a.machine_id === fm) && (!fs || sevKey(a.severity) === fs) && (!fst || a.status === fst))) {
     const tr = el("tr");
     tr.append(el("td", "", new Date(a.created_at).toLocaleString("fr-FR")), el("td", "", a.machine_id), el("td", "", ALERT_TYPES[a.type] || a.type),
-              el("td", "", a.severity), el("td", "", a.status === "active" ? "Active" : "Résolue"),
+              el("td", "", sevKey(a.severity) === "CRIT" ? "Critique" : "Attention"), el("td", "", a.status === "active" ? "Active" : "Résolue"),
               el("td", "", a.resolved_at ? new Date(a.resolved_at).toLocaleString("fr-FR") : "—"));
     body.append(tr);
   }
-}
-
-async function renderSystem() {
-  const s = await getSystem();
-  const grid = $("#services");
-  grid.replaceChildren();
-  for (const sv of s.services) {
-    const c = el("div", "card " + (sv.status === "up" ? "OK" : "CRIT"));
-    c.style.cursor = "default";
-    const r = el("div", "row");
-    r.style.marginTop = "0";
-    r.append(el("b", "", sv.name), el("span", "badge " + sv.status, sv.status === "up" ? "En marche" : "Arrêté"));
-    c.append(r);
-    grid.append(c);
-  }
-  const body = $("#queues-body");
-  body.replaceChildren();
-  for (const q of s.queues) {
-    const tr = el("tr");
-    tr.append(el("td", "", q.name), el("td", "", String(q.messages_ready)), el("td", "", String(q.consumers)));
-    body.append(tr);
-  }
-  $("#rate").textContent = `Débit : ${s.measures_per_min} mesures par minute`;
 }
 
 async function refresh() {
@@ -316,7 +290,6 @@ async function refresh() {
     if (currentView === "overview") renderOverview();
     if (currentView === "detail") await renderDetail();
     if (currentView === "alerts") renderAlerts();
-    if (currentView === "system") await renderSystem();
     $("#banner").style.display = "none";
     $("#updated").textContent = "Mise à jour : " + new Date().toLocaleTimeString("fr-FR");
   } catch (err) {
